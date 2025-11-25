@@ -63,6 +63,4 @@ Open your browser and navigate to: `http://localhost:5000`
 3. **Pose Calculation**: Uses PnP algorithm or bounding box geometry to estimate head orientation.
 4. **Gaze Analysis**: Thresholding and contour analysis to find pupils and determine gaze direction.
 
-## License
 
-MIT License
