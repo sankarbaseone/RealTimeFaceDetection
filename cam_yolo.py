@@ -9,7 +9,9 @@ print("Loading YOLO model...")
 model = YOLO('yolov8n.pt')  # YOLOv8 nano model (auto-downloads)
 
 # Also load Haar Cascade for face detection (backup/refinement)
+# Also load Haar Cascade for face detection (backup/refinement)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
 # Initialize webcam
 cap = cv2.VideoCapture(0)
@@ -27,29 +29,6 @@ track_history = {}  # Store tracking history for each face
 face_id_counter = 0
 tracked_faces = {}
 
-# 3D model points for head pose estimation
-model_points = np.array([
-    (0.0, 0.0, 0.0),             # Nose tip
-    (0.0, -330.0, -65.0),        # Chin
-    (-225.0, 170.0, -135.0),     # Left eye left corner
-    (225.0, 170.0, -135.0),      # Right eye right corner
-    (-150.0, -150.0, -125.0),    # Left mouth corner
-    (150.0, -150.0, -125.0)      # Right mouth corner
-], dtype=np.float64)
-
-# Distortion coefficients
-dist_coeffs = np.zeros((4, 1))
-
-def get_camera_matrix(frame_width, frame_height):
-    """Get camera matrix for head pose estimation"""
-    focal_length = frame_width
-    center = (frame_width / 2, frame_height / 2)
-    camera_matrix = np.array([
-        [focal_length, 0, center[0]],
-        [0, focal_length, center[1]],
-        [0, 0, 1]
-    ], dtype=np.float64)
-    return camera_matrix
 
 def calculate_head_pose_from_bbox(bbox, frame_width, frame_height):
     """
@@ -78,26 +57,58 @@ def calculate_head_pose_from_bbox(bbox, frame_width, frame_height):
     
     return pitch, yaw, roll
 
-def draw_axis(frame, yaw, pitch, roll, tdx, tdy, size=100):
-    """Draw 3D axes on the face to visualize head pose"""
-    pitch = pitch * np.pi / 180
-    yaw = -(yaw * np.pi / 180)
-    roll = roll * np.pi / 180
+
+def detect_eyes(face_roi, x, y):
+    """Detect eyes in the face region"""
+    eyes = eye_cascade.detectMultiScale(face_roi, scaleFactor=1.1, minNeighbors=10, minSize=(20, 20))
+    eye_data = []
     
-    # X-axis (red)
-    x1 = size * (np.cos(yaw) * np.cos(roll)) + tdx
-    y1 = size * (np.cos(pitch) * np.sin(roll) + np.cos(roll) * np.sin(pitch) * np.sin(yaw)) + tdy
-    cv2.line(frame, (int(tdx), int(tdy)), (int(x1), int(y1)), (0, 0, 255), 3)
+    for (ex, ey, ew, eh) in eyes:
+        # Convert eye coordinates to frame coordinates
+        eye_center_x = x + ex + ew // 2
+        eye_center_y = y + ey + eh // 2
+        eye_data.append({
+            'x': ex, 'y': ey, 'w': ew, 'h': eh,
+            'center_x': eye_center_x,
+            'center_y': eye_center_y,
+            'roi': face_roi[ey:ey+eh, ex:ex+ew]
+        })
     
-    # Y-axis (green)
-    x2 = size * (-np.cos(yaw) * np.sin(roll)) + tdx
-    y2 = size * (np.cos(pitch) * np.cos(roll) - np.sin(pitch) * np.sin(yaw) * np.sin(roll)) + tdy
-    cv2.line(frame, (int(tdx), int(tdy)), (int(x2), int(y2)), (0, 255, 0), 3)
+    return eye_data
+
+def detect_pupil(eye_roi):
+    """Detect pupil position in eye region using thresholding"""
+    if eye_roi.size == 0:
+        return None, None
     
-    # Z-axis (blue)
-    x3 = size * (np.sin(yaw)) + tdx
-    y3 = size * (-np.cos(yaw) * np.sin(pitch)) + tdy
-    cv2.line(frame, (int(tdx), int(tdy)), (int(x3), int(y3)), (255, 0, 0), 3)
+    # Convert to grayscale if needed
+    if len(eye_roi.shape) == 3:
+        eye_gray = cv2.cvtColor(eye_roi, cv2.COLOR_BGR2GRAY)
+    else:
+        eye_gray = eye_roi
+    
+    # Apply Gaussian blur
+    eye_gray = cv2.GaussianBlur(eye_gray, (7, 7), 0)
+    
+    # Threshold to find the darkest region (pupil)
+    _, threshold_eye = cv2.threshold(eye_gray, 30, 255, cv2.THRESH_BINARY_INV)
+    
+    # Find contours
+    contours, _ = cv2.findContours(threshold_eye, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Find the largest contour (likely the pupil)
+        largest_contour = max(contours, key=cv2.contourArea)
+        
+        # Get the center of the contour
+        M = cv2.moments(largest_contour)
+        if M['m00'] != 0:
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+            return cx, cy
+    
+    return None, None
+
 
 def get_orientation_text(yaw, pitch):
     """Get human-readable orientation text"""
@@ -157,8 +168,24 @@ while cap.isOpened():
                 [x1, y1, x2, y2], frame_width, frame_height
             )
             
-            # Draw 3D axes
-            draw_axis(frame, yaw, pitch, roll, face_center_x, face_center_y, size=80)
+            # Detect eyes in face region
+            face_roi = gray[y:y+h, x:x+w]
+            eye_data = detect_eyes(face_roi, x, y)
+            
+            # Draw eye bounding boxes and detect gaze
+            for eye in eye_data:
+                ex, ey, ew, eh = eye['x'], eye['y'], eye['w'], eye['h']
+                # Draw eye rectangle on frame
+                cv2.rectangle(frame, (x + ex, y + ey), (x + ex + ew, y + ey + eh), (255, 0, 0), 2)
+                
+                # Detect and draw pupil
+                pupil_x, pupil_y = detect_pupil(eye['roi'])
+                if pupil_x is not None and pupil_y is not None:
+                    # Draw pupil center
+                    pupil_frame_x = x + ex + pupil_x
+                    pupil_frame_y = y + ey + pupil_y
+                    cv2.circle(frame, (pupil_frame_x, pupil_frame_y), 3, (0, 255, 255), -1)
+            
             
             # Display head pose angles (for the first face only, to avoid clutter)
             if i == 0:
