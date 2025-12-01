@@ -13,8 +13,10 @@ model = YOLO('yolov8n.pt')  # YOLOv8 nano model (auto-downloads)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
-# Initialize webcam
-cap = cv2.VideoCapture(0)
+# Initialize video source
+# Use 0 for webcam, or provide a video file path (e.g., 'path/to/video.mp4')
+video_path = 'test_video.mp4'  # Replace with your video file path
+cap = cv2.VideoCapture(video_path)
 
 # Set camera resolution
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
